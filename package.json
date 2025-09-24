@@ -1,0 +1,21 @@
+{
+  "name": "odometer-reporter",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@lit-labs/router": "^0.1.4",
+    "events": "^3.3.0",
+    "lit": "^3.3.1",
+    "urlpattern-polyfill": "^10.1.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.4",
+    "vite-plugin-mkcert": "^1.17.8"
+  }
+}
