@@ -18,9 +18,18 @@ export async function runMigrations(pool) {
       service_date DATE,
       total_cost NUMERIC(12,2),
       description TEXT,
+      summary TEXT,
+      mileage INTEGER,
       output_text TEXT NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
+  `)
+
+  // Ensure new columns exist for existing deployments
+  await pool.query(`
+    ALTER TABLE vehicle_maintenance.maintenance_records
+    ADD COLUMN IF NOT EXISTS summary TEXT,
+    ADD COLUMN IF NOT EXISTS mileage INTEGER;
   `)
 }
 

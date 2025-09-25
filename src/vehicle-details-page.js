@@ -18,6 +18,8 @@ export class VehicleDetailsPage extends LitElement {
       uploadProgress: { type: Array },
       isUploading: { type: Boolean },
       maintenanceRecords: { type: Array },
+      isCalculatingUpcoming: { type: Boolean },
+      upcomingServices: { type: Array },
     }
   }
 
@@ -32,6 +34,8 @@ export class VehicleDetailsPage extends LitElement {
     this.uploadProgress = []
     this.isUploading = false
     this.maintenanceRecords = []
+    this.isCalculatingUpcoming = false
+    this.upcomingServices = []
   }
 
   async connectedCallback() {
@@ -45,6 +49,7 @@ export class VehicleDetailsPage extends LitElement {
       console.log('Triggering loadVehicleDetails from updated method')
       await this.loadVehicleDetails()
       await this.loadMaintenanceHistory()
+      // upcoming services are calculated on-demand by user action
     }
   }
 
@@ -212,8 +217,8 @@ export class VehicleDetailsPage extends LitElement {
                           return html`
                             <tr>
                               <td>${formattedDate}</td>
-                              <td>${reading.miles.toLocaleString()} miles</td>
-                              <td>${index === 0 ? '—' : `+${distanceTraveled.toLocaleString()} miles`}</td>
+                              <td>${reading.miles.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 })} miles</td>
+                              <td>${index === 0 ? '—' : `+${distanceTraveled.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 })} miles`}</td>
                             </tr>
                           `
                         })}
@@ -230,7 +235,7 @@ export class VehicleDetailsPage extends LitElement {
 
             <div class="actions-section">
               <div class="section-header">
-                <h3>Maintenance History</h3>
+                <h3>Maintenance History - Total: ${`$${this.maintenanceTotalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</h3>
                 <button @click=${this.openUploadModal} class="upload-btn">
                   <span class="upload-icon">📄</span>
                   Upload Invoices
@@ -250,11 +255,19 @@ export class VehicleDetailsPage extends LitElement {
                       ${this.maintenanceRecords.map(r => html`
                         <tr>
                           <td>${r.serviceDate ? new Date(r.serviceDate).toLocaleDateString() : '—'}</td>
-                          <td>${r.description || '—'}</td>
+                          <td>${r.summary || '—'}</td>
                           <td>${typeof r.totalCost === 'number' ? `$${r.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</td>
                         </tr>
                       `)}
                     </tbody>
+                    <tfoot>
+                      <tr class="total-row">
+                        <td colspan="2">Total</td>
+                        <td>
+                          ${`$${this.maintenanceTotalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 ` : html`
                   <div class="no-data">
@@ -270,6 +283,48 @@ export class VehicleDetailsPage extends LitElement {
           </div>
         `}
         
+        <div class="detail-card full-width">
+                <h3>Upcoming Services (Next 60k miles)</h3>
+                ${this.upcomingServices && this.upcomingServices.length > 0 ? html`
+                  <div class="maintenance-table-container">
+                    <table class="maintenance-table">
+                      <thead>
+                        <tr>
+                          <th>Mileage</th>
+                          <th>Services</th>
+                          <th>Estimated Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this.upcomingServices.map(item => {
+                          const mileageText = typeof item.mileage === 'number'
+                            ? `${item.mileage.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 })} miles`
+                            : '—'
+                          const servicesText = Array.isArray(item.services)
+                            ? item.services.join(', ')
+                            : (item.services || '—')
+                          const costText = typeof item.estimatedCost === 'number'
+                            ? `$${item.estimatedCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : '—'
+                          return html`
+                            <tr>
+                              <td>${mileageText}</td>
+                              <td>${servicesText}</td>
+                              <td style="text-align:right; font-weight:500; color:#28a745;">${costText}</td>
+                            </tr>
+                          `
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : html`
+                  <div class="no-data">
+                    <button class="btn-primary" @click=${this.loadUpcomingServices} ?disabled=${this.isCalculatingUpcoming}>
+                      ${this.isCalculatingUpcoming ? 'Calculating…' : 'Calculate upcoming services'}
+                    </button>
+                  </div>
+                `}
+              </div>
         <!-- Upload Modal -->
         ${this.showUploadModal ? html`
           <div class="modal-overlay" @click=${this.closeUploadModal}>
@@ -493,6 +548,41 @@ export class VehicleDetailsPage extends LitElement {
     } catch (error) {
       console.error('Failed to load maintenance history:', error)
     }
+  }
+
+  async loadUpcomingServices() {
+    try {
+      const { jwt } = jwtManager.getAuthStatus()
+      const currentMiles = this.vehicle?.odometerReading || 0
+      this.isCalculatingUpcoming = true
+      const data = await dimoApiService.getUpcomingServices(
+        this.tokenId,
+        jwt,
+        currentMiles,
+        this.vehicle?.make,
+        this.vehicle?.model,
+        this.vehicle?.year
+      )
+      const plan = Array.isArray(data?.plan) ? data.plan : []
+      this.upcomingServices = plan
+    } catch (error) {
+      console.error('Failed to load upcoming services:', error)
+      this.upcomingServices = []
+    } finally {
+      this.isCalculatingUpcoming = false
+    }
+  }
+
+  get maintenanceTotalCost() {
+    const records = Array.isArray(this.maintenanceRecords) ? this.maintenanceRecords : []
+    return records.reduce((sum, record) => {
+      const value = typeof record.totalCost === 'number'
+        ? record.totalCost
+        : (typeof record.totalCost === 'string'
+            ? parseFloat(record.totalCost.replace(/[^0-9.\-]/g, ''))
+            : 0)
+      return sum + (isNaN(value) ? 0 : value)
+    }, 0)
   }
 
   static get styles() {

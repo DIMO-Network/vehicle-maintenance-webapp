@@ -363,6 +363,40 @@ export class DimoApiService {
       throw new Error(`Failed to get maintenance records: ${error.message}`)
     }
   }
+
+  /**
+   * Get upcoming services plan from backend AI
+   * @param {number|string} tokenId
+   * @param {string} vehicleJwt
+   * @param {number} currentMileage
+   */
+  async getUpcomingServices(tokenId, vehicleJwt, currentMileage, make, model, year) {
+    try {
+      const url = new URL(`${this.baseUrl}/ai/upcoming-services/${tokenId}`)
+      if (Number.isFinite(currentMileage)) {
+        url.searchParams.set('currentMileage', String(currentMileage))
+      }
+      if (make) url.searchParams.set('make', String(make))
+      if (model) url.searchParams.set('model', String(model))
+      if (year) url.searchParams.set('year', String(year))
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          'Authorization': `Bearer ${vehicleJwt}`
+        }
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      return await response.json()
+    } catch (error) {
+      console.error('Failed to get upcoming services:', error)
+      throw new Error(`Failed to get upcoming services: ${error.message}`)
+    }
+  }
 }
 
 // Create a singleton instance

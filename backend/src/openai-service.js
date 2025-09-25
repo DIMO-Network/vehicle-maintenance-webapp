@@ -214,31 +214,62 @@ export class OpenAIService {
   }
 
   /**
-   * Generate maintenance recommendations based on vehicle data
-   * @param {Object} vehicleData - Vehicle information and history
-   * @returns {Promise<Object>} Maintenance recommendations
+   * Generate upcoming services for the next 60k miles
+   * @param {Object} params
+   * @param {number} params.currentMileage - current vehicle mileage
+   * @param {Array} params.history - maintenance history items with {serviceDate, description, totalCost}
+   * @param {number} params.horizonMiles - how many miles ahead (default 60000)
+   * @returns {Promise<Object>} Structured JSON with upcoming services
    */
-  async generateMaintenanceRecommendations(vehicleData) {
-    const prompt = `Based on the following vehicle information, provide maintenance recommendations:
+  async generateUpcomingServices({ currentMileage, history, horizonMiles = 60000, make, model, year }) {
+    const vehicleLine = make && model && year ? `${year} ${make} ${model}` : 'Unknown Vehicle'
+    const prompt = `You are a professional auto service advisor. Using the vehicle info, maintenance history, and current mileage, propose a practical maintenance schedule for the next ${horizonMiles.toLocaleString()} miles.
     
-    Vehicle: ${vehicleData.year} ${vehicleData.make} ${vehicleData.model}
-    Current Mileage: ${vehicleData.odometerReading} miles
-    Vehicle Age: ${vehicleData.age} years
+    Provide JSON only in this exact structure:
+    {
+      "plan": [
+        { "mileage": number, "services": [string, ...], "estimatedCost": number }
+      ]
+    }
     
-    Recent Maintenance History:
-    ${vehicleData.maintenanceHistory ? vehicleData.maintenanceHistory.map(service => 
-      `- ${service.date}: ${service.service} ($${service.amount})`
-    ).join('\n') : 'No maintenance history available'}
+    Rules:
+    - mileage should be thresholds ahead of current mileage (e.g., every 5k/10k/15k miles as appropriate)
+    - estimatedCost is a reasonable numeric estimate in USD (no symbols)
+    - Use history context to avoid repeating very recent services unnecessarily. The history includes mileage when service was performed, so take that into account.
+    - Limit plan to 6-12 entries across the horizon
     
-    Please provide:
-    1. Immediate maintenance needs (if any)
-    2. Upcoming maintenance recommendations
-    3. Cost estimates for recommended services
-    4. Priority levels for each recommendation
-    
-    Format the response as a structured JSON object.`
-    
-    return await this.processPrompt(prompt, 'gpt-4', 1500)
+    Vehicle: ${vehicleLine}
+    CurrentMileage: ${Math.round(currentMileage)}
+    History (most recent first):
+    ${Array.isArray(history) && history.length ? history.slice(0, 20).map(h => `- Service Date: ${h.serviceDate || 'unknown'}. Mileage: ${h.mileage || 'unknown'}. Description: ${h.description || 'service'}. Total Cost: ($${h.totalCost ?? 'n/a'})`).join('\n') : 'No history'}
+    `
+
+    // Use a capable model for structured output
+    const response = await this.processPrompt(prompt, 'gpt-4o-mini', 1200)
+    if (!response.success) return response
+
+    // Try to parse JSON from the response content
+    const raw = typeof response.content === 'string' ? response.content : JSON.stringify(response.content)
+    const cleaned = raw.trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+
+    let parsed = null
+    try {
+      parsed = JSON.parse(cleaned)
+    } catch {
+      const match = cleaned.match(/\{[\s\S]*\}/)
+      if (match) {
+        try { parsed = JSON.parse(match[0]) } catch {}
+      }
+    }
+
+    if (!parsed || !Array.isArray(parsed.plan)) {
+      return { success: false, error: 'Failed to parse upcoming services JSON', content: response.content }
+    }
+
+    return { success: true, content: parsed }
   }
 }
 

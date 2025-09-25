@@ -444,15 +444,17 @@ app.post('/api/ai/extract-maintenance', upload.single('document'), async (req, r
       return Number.isFinite(n) ? n : null
     }
     const totalCost = parseMoney(parsedOutput?.totalCost || parsedOutput?.total_cost || parsedOutput?.amount)
-    const description = parsedOutput?.serviceType || parsedOutput?.description || parsedOutput?.service || null
+    const description = parsedOutput?.description || parsedOutput?.service || null
+    const summary = parsedOutput?.serviceType || null
+    const mileage = parsedOutput?.mileage || null
 
     // Store in DB
     try {
       await pool.query(
         `INSERT INTO vehicle_maintenance.maintenance_records 
-         (token_id, service_date, total_cost, description, output_text)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [tokenId, serviceDate, totalCost, description, outputText]
+         (token_id, service_date, total_cost, description, summary, mileage, output_text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [tokenId, serviceDate, totalCost, description, summary, mileage, outputText]
       )
     } catch (dbErr) {
       console.error('Failed to insert maintenance record:', dbErr)
@@ -469,51 +471,53 @@ app.post('/api/ai/extract-maintenance', upload.single('document'), async (req, r
   }
 })
 
-// Generate maintenance recommendations
-app.post('/api/ai/maintenance-recommendations', async (req, res) => {
+// Upcoming services for next 60k miles
+app.get('/api/ai/upcoming-services/:tokenId', async (req, res) => {
   try {
-    const { vehicleData } = req.body
-    if (!vehicleData) {
-      return res.status(400).json({ error: 'Vehicle data is required' })
+    // Require Authorization header (vehicle JWT) similar to maintenance fetch
+    const authHeader = req.headers['authorization'] || ''
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' })
     }
 
-    const result = await openaiService.generateMaintenanceRecommendations(vehicleData)
-
-    if (result.success) {
-      res.json(result)
-    } else {
-      res.status(500).json(result)
+    const tokenId = parseInt(req.params.tokenId, 10)
+    if (!Number.isFinite(tokenId)) {
+      return res.status(400).json({ error: 'Invalid tokenId' })
     }
+
+    // Current odometer from vehicle-details-info endpoint would normally come from telemetry;
+    // to keep this endpoint cohesive, query last known maintenance plus optionally infer odometer if present in DB later.
+    // For now, rely on client providing it via query param if available.
+    const currentMileage = parseFloat(req.query.currentMileage || '0') || 0
+    const make = (req.query.make || '').toString()
+    const model = (req.query.model || '').toString()
+    const year = parseInt(req.query.year || '0', 10) || null
+
+    const { rows } = await pool.query(
+      `SELECT service_date as "serviceDate", description, total_cost as "totalCost", mileage
+         FROM vehicle_maintenance.maintenance_records
+        WHERE token_id = $1
+        ORDER BY service_date DESC NULLS LAST, created_at DESC
+        LIMIT 50`,
+      [tokenId]
+    )
+
+    const history = rows.map(r => ({
+      serviceDate: r.serviceDate ? new Date(r.serviceDate).toISOString().slice(0,10) : null,
+      description: r.description || null,
+      totalCost: r.totalCost != null ? Number(r.totalCost) : null,
+      mileage: r.mileage != null ? Number(r.mileage) : null,
+    }))
+
+    const result = await openaiService.generateUpcomingServices({ currentMileage, history, horizonMiles: 60000, make, model, year })
+    if (!result.success) {
+      return res.status(500).json(result)
+    }
+
+    res.json({ tokenId, currentMileage, make, model, year, plan: result.content.plan })
   } catch (error) {
-    console.error('Maintenance recommendations error:', error)
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    })
-  }
-})
-
-// Simple text prompt
-app.post('/api/ai/prompt', async (req, res) => {
-  try {
-    const { prompt, model, maxTokens } = req.body
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' })
-    }
-
-    const result = await openaiService.processPrompt(prompt, model, maxTokens)
-
-    if (result.success) {
-      res.json(result)
-    } else {
-      res.status(500).json(result)
-    }
-  } catch (error) {
-    console.error('Prompt processing error:', error)
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    })
+    console.error('Upcoming services error:', error)
+    res.status(500).json({ error: 'Failed to generate upcoming services' })
   }
 })
 
@@ -533,7 +537,7 @@ app.get('/api/maintenance/:tokenId', async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT id, token_id as "tokenId", service_date as "serviceDate", total_cost as "totalCost", 
-              description, output_text as "outputText", created_at as "createdAt"
+              description, summary, created_at as "createdAt"
          FROM vehicle_maintenance.maintenance_records
         WHERE token_id = $1
         ORDER BY service_date NULLS LAST, created_at DESC`,
